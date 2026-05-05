@@ -16,6 +16,7 @@ const userSchema = new mongoose.Schema({
   // Optional access fields — used by dept_admin / operator / guest roles.
   departmentId: { type: String, default: null },
   stationId: { type: String, default: null },
+  allowedDepartments: { type: [String], default: [] },
   allowedPages: { type: [String], default: [] },
   active: { type: Boolean, default: true },
 }, { timestamps: true });

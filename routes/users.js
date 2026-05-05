@@ -22,7 +22,12 @@ router.get('/', async (req, res) => {
 // If passcode is sent, it'll be hashed by the pre-save hook in the model.
 router.post('/', requireAdmin, async (req, res) => {
   try {
-    const { id, name, login, passcode, role, departmentId, stationId, allowedPages, active } = req.body || {};
+    const {
+      id, name, login, passcode, role,
+      departmentId, stationId,
+      allowedDepartments, allowedPages,
+      active,
+    } = req.body || {};
     if (!id || !name || !login || !role) {
       return res.status(400).json({ error: 'id, name, login, and role are required' });
     }
@@ -36,13 +41,21 @@ router.post('/', requireAdmin, async (req, res) => {
       user.role = role;
       user.departmentId = departmentId ?? null;
       user.stationId = stationId ?? null;
-      user.allowedPages = allowedPages || [];
+      // Both arrays are optional/whitelist-shaped — default to [] if not sent.
+      user.allowedDepartments = Array.isArray(allowedDepartments) ? allowedDepartments : [];
+      user.allowedPages = Array.isArray(allowedPages) ? allowedPages : [];
       user.active = active !== false;
       // Only update passcode if a non-empty value was sent — otherwise keep the existing hash.
       if (passcode && String(passcode).trim()) user.passcode = passcode;
     } else {
       if (!passcode) return res.status(400).json({ error: 'passcode is required for new users' });
-      user = new User({ id, name, login, passcode, role, departmentId, stationId, allowedPages, active: active !== false });
+      user = new User({
+        id, name, login, passcode, role,
+        departmentId, stationId,
+        allowedDepartments: Array.isArray(allowedDepartments) ? allowedDepartments : [],
+        allowedPages: Array.isArray(allowedPages) ? allowedPages : [],
+        active: active !== false,
+      });
     }
     await user.save();
     const out = user.toObject();

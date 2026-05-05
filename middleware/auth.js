@@ -56,6 +56,7 @@ export function issueToken(user) {
     role: user.role,
     departmentId: user.departmentId || null,
     stationId: user.stationId || null,
+    allowedDepartments: user.allowedDepartments || [],
     allowedPages: user.allowedPages || [],
   };
   return jwt.sign(payload, JWT_SECRET || 'dev-only-do-not-use', {
