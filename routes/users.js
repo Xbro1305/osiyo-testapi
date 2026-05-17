@@ -1,17 +1,47 @@
 import express from 'express';
 import User from '../models/User.js';
 import { authenticate, requireAdmin } from '../middleware/auth.js';
+import {
+  parseListQuery,
+  buildProjection,
+  respondList,
+} from '../middleware/pagination.js';
 
 const router = express.Router();
 router.use(authenticate);
 
 // GET /api/users — all users (admin sees everyone, others see themselves).
 // We strip passcode hashes from every response.
+//
+// Supports the standard `?limit=`, `?offset=`, `?fields=` from the pagination
+// helper. The passcode strip happens AFTER projection: if a caller asks for
+// just `id,name` they don't get passcode either way; if they ask for the
+// full document they still don't get passcode.
 router.get('/', async (req, res) => {
   try {
     const filter = req.user.role === 'admin' ? {} : { id: req.user.sub };
-    const users = await User.find(filter).select('-passcode').sort({ name: 1 }).lean();
-    res.json(users);
+    const q = parseListQuery(req);
+    const projection = buildProjection(q.fields);
+
+    let query = User.find(filter).sort({ name: 1 });
+    if (projection) {
+      // Even when projecting, exclude passcode.
+      // Mongoose: you can combine inclusion-only projections with explicit exclusion of one field.
+      // Easiest: append `-passcode` to the projection string.
+      query = query.select(`${projection} -passcode`);
+    } else {
+      query = query.select('-passcode');
+    }
+
+    if (q.paginated) {
+      const [items, total] = await Promise.all([
+        query.skip(q.offset).limit(q.limit).lean(),
+        User.countDocuments(filter),
+      ]);
+      return respondList(res, items, total, q);
+    }
+    const items = await query.lean();
+    return respondList(res, items, items.length, q);
   } catch (err) {
     console.error('Get users error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -41,11 +71,9 @@ router.post('/', requireAdmin, async (req, res) => {
       user.role = role;
       user.departmentId = departmentId ?? null;
       user.stationId = stationId ?? null;
-      // Both arrays are optional/whitelist-shaped — default to [] if not sent.
       user.allowedDepartments = Array.isArray(allowedDepartments) ? allowedDepartments : [];
       user.allowedPages = Array.isArray(allowedPages) ? allowedPages : [];
       user.active = active !== false;
-      // Only update passcode if a non-empty value was sent — otherwise keep the existing hash.
       if (passcode && String(passcode).trim()) user.passcode = passcode;
     } else {
       if (!passcode) return res.status(400).json({ error: 'passcode is required for new users' });

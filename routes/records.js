@@ -1,6 +1,11 @@
 import express from 'express';
 import Record from '../models/Record.js';
 import { authenticate } from '../middleware/auth.js';
+import {
+  parseListQuery,
+  buildProjection,
+  respondList,
+} from '../middleware/pagination.js';
 
 const router = express.Router();
 router.use(authenticate);
@@ -15,6 +20,101 @@ const VALID_STATION_KEYS = new Set([
   'maintenance', 'breakdown', 'dailycheck',
 ]);
 
+// ============================================================================
+//  Per-station search configuration
+// ----------------------------------------------------------------------------
+//  When the client sends `?search=foo`, we run a case-insensitive regex
+//  match against each listed field on that station. This is a per-station
+//  whitelist — we don't run the regex against every column blindly, because
+//  some columns store large free-text (notes) that would slow the query.
+//
+//  Add a station? Add its searchable fields here.
+// ============================================================================
+const SEARCHABLE_FIELDS = {
+  gray_store:  ['grayStoreNo', 'source', 'fabricType', 'supplier'],
+  gray_out:    ['source', 'destination', 'fabricType'],
+  input:       ['batchNo', 'source', 'fabricType'],
+  bleach:      ['batchNo', 'fabricType', 'machine'],
+  dyeing:      ['batchNo', 'dyeingNo', 'fabricType', 'color'],
+  batching:    ['batchNo', 'fabricType', 'machine'],
+  printing:    ['printNo', 'designNumber', 'fabricType', 'machine'],
+  curing:      ['printNo', 'designNumber'],
+  finishing:   ['printNo', 'designNumber', 'machine'],
+  calendering: ['printNo', 'designNumber', 'machine'],
+  folding:     ['printNo', 'designNumber', 'machine'],
+  dispatch_in: ['printNo', 'designNumber'],
+  dispatch_out:['printNo', 'designNumber', 'destination', 'driver'],
+  maintenance: ['machine', 'stationId', 'reason'],
+  breakdown:   ['machine', 'stationId', 'type', 'cause'],
+  dailycheck:  ['machine', 'stationId', 'result'],
+};
+
+// Mongo regex-escape — required because user input may contain regex chars
+// like '.', '*', '+', '(', etc. that would otherwise be interpreted.
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Build a Mongo filter object from query string parameters.
+// Recognized params:
+//   search       — free text, OR-matched against the station's searchable fields
+//   dateFrom     — inclusive lower bound on data.date (YYYY-MM-DD string compare)
+//   dateTo       — inclusive upper bound on data.date
+//   shift        — exact match on data.shift
+//   fabricType   — exact match on data.fabricType
+//   designNumber — exact match on data.designNumber
+//   batchNo      — exact match on data.batchNo
+//   printNo      — exact match on data.printNo
+//   dyeingNo     — exact match on data.dyeingNo
+//   completion   — exact match on data.completion ('COMPLETED' / 'NOT COMPLETED')
+//
+// Unknown params are ignored — silently — so adding a new field on the client
+// doesn't break the server.
+function buildRecordFilter(stationKey, q) {
+  const filter = { stationKey };
+  const and = [];
+
+  // Date range — applied as $gte / $lte on the ISO-date string. The artifact
+  // stores dates as YYYY-MM-DD which sorts correctly lexically.
+  if (q.dateFrom) and.push({ 'data.date': { $gte: String(q.dateFrom) } });
+  if (q.dateTo) {
+    // If a previous $gte exists for the same field, merge them.
+    const last = and[and.length - 1];
+    if (last && last['data.date']) {
+      last['data.date'].$lte = String(q.dateTo);
+    } else {
+      and.push({ 'data.date': { $lte: String(q.dateTo) } });
+    }
+  }
+
+  // Direct equality filters. Listing them out (rather than looping over
+  // req.query) is intentional — it acts as a whitelist so the client can't
+  // inject arbitrary mongo keys.
+  const directFields = [
+    'shift', 'fabricType', 'designNumber', 'batchNo',
+    'printNo', 'dyeingNo', 'completion',
+  ];
+  for (const f of directFields) {
+    if (q[f] !== undefined && q[f] !== '') {
+      and.push({ [`data.${f}`]: String(q[f]) });
+    }
+  }
+
+  // Free-text search across the station's whitelisted fields.
+  if (q.search && String(q.search).trim()) {
+    const fields = SEARCHABLE_FIELDS[stationKey] || [];
+    if (fields.length) {
+      const rx = new RegExp(escapeRegex(String(q.search).trim()), 'i');
+      and.push({
+        $or: fields.map((f) => ({ [`data.${f}`]: rx })),
+      });
+    }
+  }
+
+  if (and.length) filter.$and = and;
+  return filter;
+}
+
 function assertValidKey(key, res) {
   if (!VALID_STATION_KEYS.has(key)) {
     res.status(400).json({ error: `Unknown stationKey: ${key}` });
@@ -23,22 +123,45 @@ function assertValidKey(key, res) {
   return true;
 }
 
-// GET /api/records/:stationKey — return all records for that station.
+// GET /api/records/:stationKey
+//
+// Supports the standard pagination/projection params (?limit, ?offset, ?fields)
+// AND the search/filter params parsed by buildRecordFilter above. The artifact
+// stores actual record fields under `.data`, so projection is applied through
+// `data.*` and `.data` is unwrapped on the way out.
+//
+// Sort: data.date DESC then createdAt DESC. The Record model has an index on
+// `{ stationKey, 'data.date': -1 }` so this is stable and fast.
 router.get('/:stationKey', async (req, res) => {
   try {
     if (!assertValidKey(req.params.stationKey, res)) return;
-    const records = await Record.find({ stationKey: req.params.stationKey })
-      .sort({ createdAt: -1 })
-      .lean();
-    // The artifact stores the full record under .data — return that directly.
-    res.json(records.map(r => r.data));
+    const stationKey = req.params.stationKey;
+
+    const q = parseListQuery(req);
+    const projection = buildProjection(q.fields, { dataPath: 'data' });
+    const filter = buildRecordFilter(stationKey, req.query);
+
+    let query = Record.find(filter).sort({ 'data.date': -1, createdAt: -1 });
+    if (projection) query = query.select(projection);
+
+    if (q.paginated) {
+      const [rows, total] = await Promise.all([
+        query.skip(q.offset).limit(q.limit).lean(),
+        Record.countDocuments(filter),
+      ]);
+      const items = rows.map((r) => r.data || {});
+      return respondList(res, items, total, q);
+    }
+
+    const rows = await query.lean();
+    const items = rows.map((r) => r.data || {});
+    return respondList(res, items, items.length, q);
   } catch (err) {
     console.error('Get records error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// POST /api/records/:stationKey — create or update one record.
 router.post('/:stationKey', async (req, res) => {
   try {
     if (!assertValidKey(req.params.stationKey, res)) return;
@@ -57,7 +180,6 @@ router.post('/:stationKey', async (req, res) => {
   }
 });
 
-// DELETE /api/records/:stationKey/:id
 router.delete('/:stationKey/:id', async (req, res) => {
   try {
     if (!assertValidKey(req.params.stationKey, res)) return;

@@ -1,14 +1,32 @@
 import express from 'express';
 import Machine from '../models/Machine.js';
 import { authenticate } from '../middleware/auth.js';
+import {
+  parseListQuery,
+  buildProjection,
+  respondList,
+} from '../middleware/pagination.js';
 
 const router = express.Router();
 router.use(authenticate);
 
 router.get('/', async (req, res) => {
   try {
-    const machines = await Machine.find().sort({ name: 1 }).lean();
-    res.json(machines);
+    const q = parseListQuery(req);
+    const projection = buildProjection(q.fields);
+
+    let query = Machine.find().sort({ name: 1 });
+    if (projection) query = query.select(projection);
+
+    if (q.paginated) {
+      const [items, total] = await Promise.all([
+        query.skip(q.offset).limit(q.limit).lean(),
+        Machine.countDocuments(),
+      ]);
+      return respondList(res, items, total, q);
+    }
+    const items = await query.lean();
+    return respondList(res, items, items.length, q);
   } catch (err) {
     console.error('Get machines error:', err);
     res.status(500).json({ error: 'Server error' });

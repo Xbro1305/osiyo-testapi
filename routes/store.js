@@ -3,9 +3,14 @@ import StoreSale from '../models/StoreSale.js';
 import StorePayment from '../models/StorePayment.js';
 import StoreStockIn from '../models/StoreStockIn.js';
 import { authenticate } from '../middleware/auth.js';
+import {
+  parseListQuery,
+  buildProjection,
+  respondList,
+} from '../middleware/pagination.js';
 
 // Three parallel sub-routers under /api/store/{sales,payments,stockin}.
-// All use the same CRUD pattern; we factor that into a small helper.
+// All use the same CRUD pattern with pagination; we factor that into a small helper.
 
 function crudRouter(Model, name) {
   const r = express.Router();
@@ -13,8 +18,21 @@ function crudRouter(Model, name) {
 
   r.get('/', async (req, res) => {
     try {
-      const rows = await Model.find().sort({ date: -1 }).lean();
-      res.json(rows);
+      const q = parseListQuery(req);
+      const projection = buildProjection(q.fields);
+
+      let query = Model.find().sort({ date: -1 });
+      if (projection) query = query.select(projection);
+
+      if (q.paginated) {
+        const [items, total] = await Promise.all([
+          query.skip(q.offset).limit(q.limit).lean(),
+          Model.countDocuments(),
+        ]);
+        return respondList(res, items, total, q);
+      }
+      const items = await query.lean();
+      return respondList(res, items, items.length, q);
     } catch (err) {
       console.error(`Get ${name} error:`, err);
       res.status(500).json({ error: 'Server error' });
@@ -46,7 +64,6 @@ function crudRouter(Model, name) {
   return r;
 }
 
-// Mounted at /api/store — the three sub-paths /sales /payments /stockin.
 const router = express.Router();
 router.use('/sales', crudRouter(StoreSale, 'store-sale'));
 router.use('/payments', crudRouter(StorePayment, 'store-payment'));

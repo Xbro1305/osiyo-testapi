@@ -1,14 +1,32 @@
 import express from 'express';
 import Program from '../models/Program.js';
 import { authenticate } from '../middleware/auth.js';
+import {
+  parseListQuery,
+  buildProjection,
+  respondList,
+} from '../middleware/pagination.js';
 
 const router = express.Router();
 router.use(authenticate);
 
 router.get('/', async (req, res) => {
   try {
-    const programs = await Program.find().sort({ createdAt: -1 }).lean();
-    res.json(programs);
+    const q = parseListQuery(req);
+    const projection = buildProjection(q.fields);
+
+    let query = Program.find().sort({ createdAt: -1 });
+    if (projection) query = query.select(projection);
+
+    if (q.paginated) {
+      const [items, total] = await Promise.all([
+        query.skip(q.offset).limit(q.limit).lean(),
+        Program.countDocuments(),
+      ]);
+      return respondList(res, items, total, q);
+    }
+    const items = await query.lean();
+    return respondList(res, items, items.length, q);
   } catch (err) {
     console.error('Get programs error:', err);
     res.status(500).json({ error: 'Server error' });
