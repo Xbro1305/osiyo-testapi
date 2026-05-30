@@ -36,6 +36,37 @@ const DEFAULT_LISTS = {
   dailyCheckResult: ['OK', 'Minor issue', 'Needs attention', 'Stop machine'],
   grayFabricSource: ['OSIYO', 'ORZU', 'FROM OUTSIDE'],
   grayOutDestination: ['Sold to outside', 'Returned to OSIYO', 'Returned to ORZU', 'Internal transfer', 'Write-off'],
+
+  // ===== Local Market Store =====
+  //
+  // These were previously only seeded from the frontend defaults on first
+  // run. Adding them here so the backend is the single source of truth for
+  // fresh installs and re-seeds.
+  paymentMethod: ['Cash', 'Bank Transfer', 'Card', 'Mixed'],
+  storeUnit: ['meters', 'rolls', 'kg', 'pieces'],
+  customerType: ['Retail', 'Wholesale', 'Reseller', 'Tailor', 'Other'],
+  // "Correction" is for manual stock adjustments (e.g. a physical count
+  // discovers extra/missing meters that don't tie to any dispatch or supplier).
+  storeStockSource: [
+    'From Production (Dispatch)',
+    'External Supplier',
+    'Return / Refurbished',
+    'Correction',
+  ],
+  // Granular fabric-type list for the local market store. Separate from
+  // `fabricType` above because the store sells finished fabric in commercial
+  // categories that don't map 1:1 to what production tracks.
+  stockFabricType: [
+    'Plain Cotton',
+    'Printed Cotton',
+    'Cotton Satin',
+    'Voile',
+    'Crepe',
+    'Chiffon',
+    'Linen',
+    'Polyester',
+    'Mixed Blend',
+  ],
 };
 
 async function seed() {
@@ -60,13 +91,48 @@ async function seed() {
       console.log('✓ Admin user already exists');
     }
 
-    // Default lists
+    // Default lists.
+    //
+    // Behaviour:
+    //   - Fresh install (no ConfigLists doc) → create with the full DEFAULT_LISTS.
+    //   - Existing install → MERGE missing keys in. User-customised lists are
+    //     preserved (we never overwrite an existing key); only genuinely
+    //     missing keys are added. This way re-running the seed after we add
+    //     a new list (like `stockFabricType`) gives an upgrade path that
+    //     doesn't clobber operator customisations.
     const listsExist = await ConfigLists.findOne();
     if (!listsExist) {
       await ConfigLists.create({ data: DEFAULT_LISTS });
       console.log('✓ Default lists configuration created');
     } else {
-      console.log('✓ Lists already exist');
+      const current = listsExist.data || {};
+      const added = [];
+      for (const key of Object.keys(DEFAULT_LISTS)) {
+        if (!Array.isArray(current[key]) || current[key].length === 0) {
+          current[key] = DEFAULT_LISTS[key];
+          added.push(key);
+        }
+      }
+      if (added.length) {
+        listsExist.data = current;
+        listsExist.markModified('data');
+        await listsExist.save();
+        console.log(`✓ Lists updated — added missing keys: ${added.join(', ')}`);
+      } else {
+        console.log('✓ Lists already complete — nothing to merge');
+      }
+
+      // Also patch existing storeStockSource if it's there but missing
+      // the new "Correction" value. (This is the one upgrade we DO apply
+      // even to an existing key, because adding to a list is non-destructive.)
+      if (Array.isArray(current.storeStockSource)
+          && !current.storeStockSource.includes('Correction')) {
+        current.storeStockSource.push('Correction');
+        listsExist.data = current;
+        listsExist.markModified('data');
+        await listsExist.save();
+        console.log('✓ Added "Correction" to storeStockSource');
+      }
     }
 
     console.log('✓ Seed completed');

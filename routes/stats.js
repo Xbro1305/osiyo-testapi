@@ -15,7 +15,11 @@
 //      dispatch_out: { qty: N },
 //    },
 //    customers: N, sales: N, payments: N, stockIn: N,
-//    storeTotals: { stockInQty: N, salesQty: N, salesValue: N, paidAmount: N },
+//    designs: N, machines: N, programs: N,
+//    storeTotals: {
+//      stockInQty: N, stockInCost: N,
+//      salesQty: N, salesValue: N, paidAmount: N, paymentsTotal: N,
+//    },
 //  }
 //
 //  Implementation: all queries run in parallel via Promise.all. Counts use
@@ -106,14 +110,31 @@ router.get('/', async (_req, res) => {
     );
 
     // ---- Store-section aggregates ----
-    // StockIn total qty, sales qty + value + paid, for the Local Market Store
-    // department home stats.
+    // StockIn total qty + total cost, sales qty + value + paid, for the
+    // Local Market Store department home stats.
+    //
+    // Note about `qty`: v2 stock-in records have rich shape (rollLines +
+    // extraMeters) but the frontend always mirrors the computed total into
+    // `qty` on save, so summing `qty` here continues to give the correct
+    // total meters across both legacy and v2 records. No aggregation over
+    // the rollLines array is needed.
+    //
+    // `stockInCost` = Σ(qty × costPerMeter). Falls back to costPrice for
+    // legacy records that don't have costPerMeter set.
     const storeStockInAggPromise = StoreStockIn.aggregate([
       {
         $group: {
           _id: null,
           stockInQty: {
             $sum: { $convert: { input: { $ifNull: ['$qty', 0] }, to: 'double', onError: 0, onNull: 0 } },
+          },
+          stockInCost: {
+            $sum: {
+              $multiply: [
+                { $convert: { input: { $ifNull: ['$qty', 0] }, to: 'double', onError: 0, onNull: 0 } },
+                { $convert: { input: { $ifNull: ['$costPerMeter', { $ifNull: ['$costPrice', 0] }] }, to: 'double', onError: 0, onNull: 0 } },
+              ],
+            },
           },
         },
       },
@@ -183,6 +204,7 @@ router.get('/', async (_req, res) => {
 
     const storeTotals = {
       stockInQty: stockInAgg[0]?.stockInQty || 0,
+      stockInCost: stockInAgg[0]?.stockInCost || 0,
       salesQty: salesAgg[0]?.salesQty || 0,
       salesValue: salesAgg[0]?.salesValue || 0,
       paidAmount: salesAgg[0]?.paidAmount || 0,
