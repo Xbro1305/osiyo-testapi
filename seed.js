@@ -56,16 +56,21 @@ const DEFAULT_LISTS = {
   // Granular fabric-type list for the local market store. Separate from
   // `fabricType` above because the store sells finished fabric in commercial
   // categories that don't map 1:1 to what production tracks.
+  //
+  // v4 shape: each entry is { name, cost } — per-meter cost lives here, not
+  // on individual stock-in records. The frontend reads cost via the helper
+  // `getFabricCost(name, lists)` so legacy `string[]` entries still resolve
+  // (their cost defaults to 0 until an operator edits the list).
   stockFabricType: [
-    'Plain Cotton',
-    'Printed Cotton',
-    'Cotton Satin',
-    'Voile',
-    'Crepe',
-    'Chiffon',
-    'Linen',
-    'Polyester',
-    'Mixed Blend',
+    { name: 'Plain Cotton', cost: 0 },
+    { name: 'Printed Cotton', cost: 0 },
+    { name: 'Cotton Satin', cost: 0 },
+    { name: 'Voile', cost: 0 },
+    { name: 'Crepe', cost: 0 },
+    { name: 'Chiffon', cost: 0 },
+    { name: 'Linen', cost: 0 },
+    { name: 'Polyester', cost: 0 },
+    { name: 'Mixed Blend', cost: 0 },
   ],
 };
 
@@ -107,21 +112,43 @@ async function seed() {
     } else {
       const current = listsExist.data || {};
       const added = [];
+      const migrated = [];
       for (const key of Object.keys(DEFAULT_LISTS)) {
         if (!Array.isArray(current[key]) || current[key].length === 0) {
           current[key] = DEFAULT_LISTS[key];
           added.push(key);
         }
       }
-      if (added.length) {
+      // ===== v4 soft migration: stockFabricType =====
+      //
+      // Legacy entries are plain strings; v4 wants `{ name, cost }` objects.
+      // If any entry is still a string, rewrap it as { name: <string>, cost: 0 }
+      // so the operator can edit the cost in Lists admin without losing their
+      // custom fabric type names. Idempotent — re-runs do nothing.
+      if (Array.isArray(current.stockFabricType)) {
+        let touched = false;
+        current.stockFabricType = current.stockFabricType.map((entry) => {
+          if (typeof entry === 'string') {
+            touched = true;
+            return { name: entry, cost: 0 };
+          }
+          return entry;
+        });
+        if (touched) migrated.push('stockFabricType');
+      }
+      if (added.length || migrated.length) {
         listsExist.data = current;
         listsExist.markModified('data');
         await listsExist.save();
-        console.log(`✓ Lists updated — added missing keys: ${added.join(', ')}`);
+        if (added.length) {
+          console.log(`✓ Lists updated — added missing keys: ${added.join(', ')}`);
+        }
+        if (migrated.length) {
+          console.log(`✓ Lists migrated to v4 shape: ${migrated.join(', ')}`);
+        }
       } else {
-        console.log('✓ Lists already complete — nothing to merge');
+        console.log('✓ Lists already up to date');
       }
-
       // Also patch existing storeStockSource if it's there but missing
       // the new "Correction" value. (This is the one upgrade we DO apply
       // even to an existing key, because adding to a list is non-destructive.)

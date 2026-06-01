@@ -46,8 +46,18 @@ const storeStockInSchema = new mongoose.Schema(
     // null for legacy records. `designId` value "mix" is a sentinel meaning
     // "multiple designs in this stock-in".
     fabricState: { type: String },       // "printed" | "dyed" | undefined
-    designId: { type: String },          // Design._id or "mix"
+    // `designId` value "mix" means "multi-design within one batcher of full
+    // rolls" (e.g. one 30m batcher printed several designs). `designId` value
+    // "remainder" means "leftover short pieces from many designs, pooled into
+    // a shared bucket" — added in v3 alongside the new picker tile. Both are
+    // string sentinels in the same field so reads stay simple.
+    designId: { type: String },          // Design._id | "mix" | "remainder"
     hexColor: { type: String },          // "#RRGGBB"
+    // Human-friendly color name for dyed fabric. Set alongside hexColor by
+    // the operator — used as the primary display label in tables and
+    // exports. Optional for back-compat; old dyed records show the hex code
+    // instead. Added in v3.
+    colorName: { type: String },
 
     // ----- Quantity entry -----
     //

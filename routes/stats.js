@@ -119,8 +119,15 @@ router.get('/', async (_req, res) => {
     // total meters across both legacy and v2 records. No aggregation over
     // the rollLines array is needed.
     //
-    // `stockInCost` = Σ(qty × costPerMeter). Falls back to costPrice for
-    // legacy records that don't have costPerMeter set.
+    // `stockInCost` = Σ(qty × costPerMeter).
+    //
+    // As of v4 the canonical cost lives on the stock fabric type list, not
+    // on individual records. The frontend Stock In form persists a SNAPSHOT
+    // of the resolved cost into `costPerMeter` on save, so this aggregation
+    // continues to give a correct (point-in-time) figure for both legacy
+    // and v4 records without joining ConfigLists at query time. If the list
+    // cost changes later, the snapshot on saved records doesn't move —
+    // that's intentional, so reports are reproducible.
     const storeStockInAggPromise = StoreStockIn.aggregate([
       {
         $group: {
