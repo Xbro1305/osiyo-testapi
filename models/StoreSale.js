@@ -5,10 +5,25 @@ import mongoose from 'mongoose';
 // on-hand stock, each picked length+qty is captured here so the Current
 // Stock view can compute on-hand-per-length exactly (stock-in adds; sales
 // subtract per length).
+//
+// v5 — multi-design support: each line OPTIONALLY carries its own variant
+// fields (designId / hexColor / colorName / fabricType). When present they
+// override the sale's top-level variant for that specific line. Lets a
+// single sale span multiple designs/colors natively. Legacy sales (no
+// per-line variant) still validate — readers fall back to top-level
+// fields. Detection: if ANY line has any of these set, the sale is v5.
 const rollLineSchema = new mongoose.Schema(
   {
     length: { type: Number, default: 0 },
     qty: { type: Number, default: 0 },
+    // v5 per-line variant — all optional. designId follows the same
+    // sentinel convention as the top-level field ("mix" | "remainder" |
+    // a Design._id). hexColor is "#RRGGBB". fabricType is the
+    // stockFabricType name from ConfigLists.
+    designId: { type: String },
+    hexColor: { type: String },
+    colorName: { type: String },
+    fabricType: { type: String },
   },
   { _id: false },
 );
