@@ -12,6 +12,11 @@ const recordSchema = new mongoose.Schema({
   id: { type: String, required: true },
   stationKey: { type: String, required: true, index: true },
   data: { type: Object, required: true },
+  //
+  // Note: an `archived` flag lives INSIDE `data`, not on the top-level
+  // doc. The data blob is free-form and the list endpoint serializes
+  // `data` only — keeping the flag inside means no projection changes,
+  // no migration, and the existing save path persists it for free.
 }, { timestamps: true });
 
 // Same id can repeat across different stations, but must be unique within one.

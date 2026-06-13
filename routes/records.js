@@ -191,4 +191,48 @@ router.delete('/:stationKey/:id', async (req, res) => {
   }
 });
 
+// ============================================================================
+//  Batch archive — soft-hide many records at once
+// ----------------------------------------------------------------------------
+//  Body shapes accepted:
+//    { before: "YYYY-MM-DD" }  — archive every record at this station with
+//                                data.date <= before (records without a date
+//                                are skipped)
+//    { ids: ["...","..."] }    — archive a specific list of record ids
+//    { archived: false }       — combine with either above to UNARCHIVE
+//                                instead. Defaults to true (archive).
+//
+//  Returns: { modified: N }
+// ============================================================================
+router.post('/:stationKey/archive-batch', async (req, res) => {
+  try {
+    if (!assertValidKey(req.params.stationKey, res)) return;
+    const { before, ids, archived } = req.body || {};
+    const setArchived = archived === false ? false : true;
+    const filter = { stationKey: req.params.stationKey };
+    if (before) {
+      filter['data.date'] = { $lte: String(before) };
+    } else if (Array.isArray(ids) && ids.length) {
+      filter.id = { $in: ids };
+    } else {
+      return res.status(400).json({
+        error: "Either 'before' (YYYY-MM-DD) or 'ids' (string[]) is required",
+      });
+    }
+    // Use $set on data.archived. Mongoose's strict schema lets undeclared
+    // sub-fields through (data is Mixed type), so this works without
+    // schema changes.
+    const result = await Record.updateMany(filter, {
+      $set: { 'data.archived': setArchived },
+    });
+    res.json({
+      modified: result.modifiedCount || result.nModified || 0,
+      matched: result.matchedCount || result.n || 0,
+    });
+  } catch (err) {
+    console.error('Archive batch error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 export default router;

@@ -55,18 +55,27 @@ const STATION_KEYS = [
 // Per-station numeric fields to sum. These match the aggregates the
 // PrintingDepartmentHome and StoreDepartmentHome show as headline stats.
 // Add an entry here when you want a new sum exposed to the home pages.
+//
+// Note: `input` station tracks `meters` (the SING&DES batch's total
+// meters). Folding tracks 4 sort buckets so the dept-home can show a
+// breakdown (fresh / 2nd / reject / incomplete).
 const SUM_FIELDS = {
+  input: ['meters'],
   printing: ['printedQty'],
   finishing: ['finishedQty'],
   calendering: ['qty'],
-  folding: ['totalMeters', 'firstQty', 'secondQty', 'rejectQty'],
+  folding: ['totalMeters', 'firstQty', 'secondQty', 'rejectQty', 'incompleteQty'],
   dispatch_out: ['qty'],
 };
 
 // Run one aggregation that returns the sums of the given fields for a station.
 // Mongoose's aggregate is faster than fetching the rows because the pipeline
 // runs server-side and only the summed numbers come back over the wire.
-async function sumFieldsFor(stationKey, fields) {
+//
+// `dateRange` is optional. When provided as { from, to } (inclusive YYYY-MM-DD
+// strings), the aggregation matches only records whose `data.date` falls in
+// that range. Used for the monthly stat cards on the printing dept home.
+async function sumFieldsFor(stationKey, fields, dateRange) {
   if (!fields || !fields.length) return {};
   // Build a $group stage that produces one accumulator per field.
   const groupStage = { _id: null };
@@ -84,8 +93,15 @@ async function sumFieldsFor(stationKey, fields) {
       },
     };
   }
+  // Build the pipeline. If a dateRange is given, the $match limits records
+  // to the window. Using string comparison on YYYY-MM-DD is timezone-safe
+  // and indexable (cheap when there's an index on { stationKey, 'data.date' }).
+  const match = { stationKey };
+  if (dateRange && dateRange.from && dateRange.to) {
+    match['data.date'] = { $gte: dateRange.from, $lte: dateRange.to };
+  }
   const result = await Record.aggregate([
-    { $match: { stationKey } },
+    { $match: match },
     { $group: groupStage },
   ]);
   if (!result.length) {
@@ -107,6 +123,27 @@ router.get('/', async (_req, res) => {
     // ---- Sums: one aggregate per station that has sum fields configured ----
     const sumPromises = Object.entries(SUM_FIELDS).map(([k, fields]) =>
       sumFieldsFor(k, fields).then((s) => [k, s])
+    );
+
+    // ---- Month-scoped sums (current calendar month, server clock) ----
+    //
+    // Same aggregations, but with a date-range $match. Used by the dept
+    // home tiles to show "this month's meters" instead of all-time. The
+    // server clock defines the month, not the client — that's fine for our
+    // operators since the data is entered live and they're all in one
+    // timezone. If timezone drift becomes an issue, switch to passing
+    // ?from=&to= from the client and use those instead.
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const monthFrom = `${yyyy}-${mm}-01`;
+    // Last day of the current month: jump to next month's day-0 (= last day
+    // of this month) and ISO-format. Day count varies (28-31), this handles it.
+    const lastDay = new Date(yyyy, today.getMonth() + 1, 0).getDate();
+    const monthTo = `${yyyy}-${mm}-${String(lastDay).padStart(2, '0')}`;
+    const monthRange = { from: monthFrom, to: monthTo };
+    const monthSumPromises = Object.entries(SUM_FIELDS).map(([k, fields]) =>
+      sumFieldsFor(k, fields, monthRange).then((s) => [k, s])
     );
 
     // ---- Store-section aggregates ----
@@ -178,6 +215,7 @@ router.get('/', async (_req, res) => {
     const [
       stationEntries,
       sumEntries,
+      monthSumEntries,
       customers,
       sales,
       payments,
@@ -191,6 +229,7 @@ router.get('/', async (_req, res) => {
     ] = await Promise.all([
       Promise.all(stationCountPromises),
       Promise.all(sumPromises),
+      Promise.all(monthSumPromises),
       Customer.countDocuments(),
       StoreSale.countDocuments(),
       StorePayment.countDocuments(),
@@ -209,6 +248,10 @@ router.get('/', async (_req, res) => {
     const sums = {};
     for (const [k, s] of sumEntries) sums[k] = s;
 
+    // Month-scoped sums — same shape as `sums` but for the current month.
+    const monthSums = {};
+    for (const [k, s] of monthSumEntries) monthSums[k] = s;
+
     const storeTotals = {
       stockInQty: stockInAgg[0]?.stockInQty || 0,
       stockInCost: stockInAgg[0]?.stockInCost || 0,
@@ -221,6 +264,7 @@ router.get('/', async (_req, res) => {
     res.json({
       counts,
       sums,
+      monthSums,
       customers,
       sales,
       payments,
