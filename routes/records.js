@@ -17,6 +17,7 @@ const VALID_STATION_KEYS = new Set([
   'input', 'bleach', 'dyeing', 'batching',
   'printing', 'curing', 'finishing', 'calendering', 'folding',
   'dispatch_in', 'dispatch_out',
+  'ombor_in', 'ombor_out',
   'maintenance', 'breakdown', 'dailycheck',
 ]);
 
@@ -44,6 +45,8 @@ const SEARCHABLE_FIELDS = {
   folding:     ['printNo', 'designNumber', 'machine'],
   dispatch_in: ['printNo', 'designNumber'],
   dispatch_out:['printNo', 'designNumber', 'destination', 'driver'],
+  ombor_in:    ['designNumber', 'source', 'fabricType'],
+  ombor_out:   ['designNumber', 'destination', 'driver', 'sentBy', 'fabricType'],
   maintenance: ['machine', 'stationId', 'reason'],
   breakdown:   ['machine', 'stationId', 'type', 'cause'],
   dailycheck:  ['machine', 'stationId', 'result'],
