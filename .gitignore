@@ -5,3 +5,4 @@
 .env.development
 *.log
 .DS_Store
+uploads/
