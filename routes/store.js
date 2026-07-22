@@ -3,6 +3,7 @@ import StoreSale from '../models/StoreSale.js';
 import StorePayment from '../models/StorePayment.js';
 import StoreStockIn from '../models/StoreStockIn.js';
 import Design from '../models/Design.js';
+import ConfigLists from '../models/ConfigLists.js';
 import { authenticate } from '../middleware/auth.js';
 import {
   parseListQuery,
@@ -80,6 +81,20 @@ function crudRouter(Model, name) {
 //  endpoint is open (fine for a public catalogue; set the key if stock levels
 //  are commercially sensitive). CORS is already handled globally in server.js.
 // ============================================================================
+
+// Optional API-key gate shared by the public store endpoints. Returns true if
+// the request may proceed; otherwise sends a 401 and returns false. When
+// STORE_STOCK_API_KEY is unset the endpoints are open.
+function publicKeyOk(req, res) {
+  const requiredKey = process.env.STORE_STOCK_API_KEY;
+  if (!requiredKey) return true;
+  const given = req.get('x-api-key') || req.query.key;
+  if (given !== requiredKey) {
+    res.status(401).json({ error: 'Invalid API key' });
+    return false;
+  }
+  return true;
+}
 
 // Meters a stock-in record contributes (mirrors the app's stockInMeters()):
 // unit=rolls → Σ(length×qty)+extraMeters; unit=meters → qty; legacy → lines if any, else qty.
@@ -241,11 +256,7 @@ const router = express.Router();
 // Public read-only stock feed for the customer site.
 router.get('/stock', async (req, res) => {
   try {
-    const requiredKey = process.env.STORE_STOCK_API_KEY;
-    if (requiredKey) {
-      const given = req.get('x-api-key') || req.query.key;
-      if (given !== requiredKey) return res.status(401).json({ error: 'Invalid API key' });
-    }
+    if (!publicKeyOk(req, res)) return;
     const items = await computeOnHand();
     res.set('Cache-Control', 'public, max-age=60'); // 1-min CDN/browser cache
     res.json({
@@ -255,6 +266,36 @@ router.get('/stock', async (req, res) => {
     });
   } catch (err) {
     console.error('Public store stock error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ============================================================================
+//  PUBLIC read-only fabric types + prices  —  GET /api/store/fabric-types
+//
+//  Returns the `stockFabricType` list from Lists so the customer site can show
+//  prices. v4 entries are { name, cost }; legacy string entries are normalised
+//  to { name, cost: null }. `cost` is the per-meter figure stored in the app.
+//  Same optional API-key gate as /stock.
+// ============================================================================
+router.get('/fabric-types', async (req, res) => {
+  try {
+    if (!publicKeyOk(req, res)) return;
+    const config = await ConfigLists.findOne().sort({ createdAt: -1 }).lean();
+    const raw = (config && config.data && config.data.stockFabricType) || [];
+    const items = (Array.isArray(raw) ? raw : []).map((x) =>
+      typeof x === 'string'
+        ? { name: x, cost: null }
+        : { name: x?.name ?? '', cost: x?.cost ?? null },
+    );
+    res.set('Cache-Control', 'public, max-age=60');
+    res.json({
+      updatedAt: new Date().toISOString(),
+      count: items.length,
+      stockFabricType: items,
+    });
+  } catch (err) {
+    console.error('Public fabric-types error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
